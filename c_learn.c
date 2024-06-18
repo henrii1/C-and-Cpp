@@ -176,3 +176,90 @@ int main(){
 // compile: - gcc c_learn.c -o hello
 // run    - ./hello
         
+
+//NEW CODE
+
+
+// write a code to remove all comments from c code.
+#include <stdio.h>
+#include <stdlib.h>
+
+#define MAX_BUFFER 1024
+
+void strip(FILE *input, FILE *output){
+ 
+     char c;
+     int in_string = 0, in_char = 0;
+     int prev_char = 0;
+
+     while((c=fgetc(input)) != EOF){
+        if (in_string) {
+            if (c == '"' && prev_char != '\\'){
+                in_string = 0;
+            }
+            fputc(c, output);
+        } else if (in_char) {
+            if (c == '\'' && prev_char != '\\'){
+                in_char = 0;
+            }
+            fputc(c, output);
+        } else {
+            if (c == '/' && prev_char == '/'){
+                while((c=fgetc(input)) != EOF && c != '\n'){
+                    if (c != EOF){
+                        fputc('\n', output);
+                    }
+                    prev_char = 0;
+                    continue;
+                } else if (c == '*' && prev_char == '/'){
+                    while ((c=fgetc(input)) != EOF) {
+                        if (c == '/' && prev_char =='*'){
+                            break;
+                        }
+                        prev_char = c;
+                    }
+                    prev_char = 0;
+                    continue;
+                } else {
+                    if (c == '"'){
+                        in_string = 1;
+                    }
+                    if (prev_char) {
+                        fputc(prev_char, output);
+                    }
+                }
+            }
+            prev_char = c;
+        }
+        if (prev_char) {
+            fputc(prev_char, output);
+        }
+     }
+
+
+int main(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <input file> <output file> \n", argv[0])
+        return 1;
+    }
+
+    FILE *input = fopen(argv[1], "r");
+    if (!input){
+        perror("Failed to open input file");
+        return 1;
+    }
+
+    FILE *output = fopen(argv[2], "w");
+    if (!output) {
+        perror("Failed to open output file");
+        fclose(input);
+        return 1;
+    }
+
+    strip(input, output)
+
+    fclose(input);
+    fclose(output);
+
+    return 0;
+}
