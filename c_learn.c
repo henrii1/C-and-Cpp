@@ -263,3 +263,111 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+
+
+//NEW CODE
+
+//create a function that convert an integer 'n' into a base 'b' representation in the string 's'
+
+//we'll use the division method
+#include <stdio.h>
+#include <string.h>
+
+void reverse(char s[]) {
+    int i, j;
+    char c;
+    for (i=0, j=strlen(s)-1; i < j; i++, j--){
+        c = s[i];
+        s[i] = s[j];
+        s[j] = c;
+    }
+}
+
+void itob(int n, char s[], int b) {
+    int i = 0, sign;
+    int digit;
+    //convert negative value to positive
+    if((sign = n) < 0){
+        n = -n;
+    }
+    do {
+        digit = n % b;
+        s[i++] = (digit>9) ? (digit - 10 + 'A') : (digit + '0')  //the first condition considers hex
+    } while ((n /= b) > 0);  // more expressive n = n / b
+    if (sign < 0) {
+        s[i++] = '-';  // s[i++] loops to the next within the array string
+
+    }
+    s[i] = '\0';
+    reverse(s);
+}
+
+
+int main() {
+    char buffer[50];    // when initializing outside of a function, you'll need to include an array length
+
+    int n = 255;
+    int base = 16;
+    itob(n, buffer, base);
+    print("%d in base %d is %s\n", n, base, buffer);
+
+    return 0;
+}
+
+
+
+
+//New Code
+
+//if a number is stored in an array, the array is reordered from low-order digits to high-order digits
+
+// to print properly, we can complete our computation and use the reverse_string function. or we can formulate a recursive solution.
+
+
+//print n in decimal n is also a decimal.
+
+#include <stdio.h>
+
+void printd(int n){
+    if (n < 0){
+        putchar('-');
+        n = -n;
+    }
+    if (n / 10)
+        printd(n / 10);
+    putchar(n % 10 + '0');  //start from the lowest multiple
+}
+
+
+//New Code
+
+// A recursive version of reverse(s)
+
+#include <stdio.h>
+#include <string.h>
+
+void reverse_recursive_helper(char s[], int start, int end){
+    if (start >= end) {
+        return;   //exit condition
+    }
+
+    char temp = s[start];
+    s[start] = s[end];
+    s[end] = temp;
+
+    reverse_recursive_helper(s, start + 1, end - 1);
+}
+
+void reverse(char s[]){
+    int len = strlen(s);
+
+    reverse_recursive_helper(s, 0, len-1);
+
+}
+
+
+int main() {
+    char str1[] = "hello";
+    reverse(str1);
+    printf("Reversed: %s\n", str1);
+}
