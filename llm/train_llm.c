@@ -400,5 +400,108 @@ void gelu_forward(float* out, float* inp, int N){
 }
 
 
+// Ofast optimization
+#pragma float_control(precise, on, push)
+#if defined(__GNUC__)&& !defined(__clang__)
+__attribute__((optimize("no-finite-math-only")))
+#endif
 
+void gleu_backward(float* dinp, float* inp, float* dout, int N){
+    for (int i=0; i<N; i++){
+        float x = inp[i];
+        float cube = 0.044715f*x*x*x;
+        float tanh_arg = GELU_SCALING_FACTOR*(x + cube);
+        float tanh_out = tanhf(tanh_arg);
+        float coshf_out = coshf(tanh_arg);
+        float sec_out = 1.0f/(coshf_out * coshf_out);
+        float local_grad = 0.5f * (1.0f + tanh_out) + x*0.5f*sec_out*GELU_SCALING_FACTOR*(1.0f + 3.0f*0.044715f*x*x);
+        dinp[i] += local_grad*dout[i];
+    }
+}
+
+#pragma float_control(pop)   //end
+
+void residual_forward(float* out, float* inp1, float* inp2, int N){
+    for (int i=0; i<N; i++){
+        out[i] = inp1[i] + inp2[i];
+    }
+}
+
+void residual_backward(float* dinp1, float* dinp2, float* dout, int N){
+    for (int i=0; i<N; i++){
+        dinp1[i] +=dout[i];
+        dinp2[i] += dout[i];
+    }
+}
+
+
+void softmax_forward(float* probs, float* logits, int B, int T, int V, int Vp){
+    // output: probs are (B,T,Vp) of the probabilities (sums to 1.0 in each b,t position)
+    // input: logits is (B,T,Vp) of the unnormalized log probabilities
+    // Vp is the padded vocab size (for efficiency), V is the "real" vocab size
+    // example: Vp is 50304 and V is 50257
+    #pragma omp parallel for collapes(2)
+    for (int b=0; b<B; b++){
+        for (int t=0; t<T; t++){
+            // probs <- softma(logits)
+            float* logits_bt = logits + b*T*Vp + t*Vp;
+            float* probs_bt = probs + b*T*Vp + t*Vp;
+
+            //maxval is only calculated and substracted for numerical stability
+            float maxval = -10000.0f;
+            for (int i=0; i<V; i++){
+                if (logits_bt[i] > maxval) {maxval = logits_bt[i]; }
+
+            }
+            float sum = 0.0f;
+            for (int i=0; i<V; i++){
+                probs_bt[i] = expf(logits_bt[i] - maxval);
+                sum += probs_bt[i];
+            }
+            // loop to V, leaving the padded dim
+            for (int i=0; i<V; i++){
+                probs_bt[i] /= sum;
+            }
+            //for safety, lets force the probabilities to zero
+            for (int i=V; i<Vp; i++){
+                probs_bt[i] = 0.0f;
+            }
+        }
+    }
+}
+
+
+void crossentropy_forward(float* losses, float* probs, int* targets,
+                            int B, int T, int Vp){
+                                // output: losses is (B,T) of the individual losses at each position
+                                // input: probs are (B,T,Vp) of the probabilities
+                                // input: targets is (B,T) of integers giving the correct index in logits
+                                for(int b=0; b<B; b++){
+                                    for (int t=0; t<T; t++){
+                                        float* probs_bt = probs + b*T*Vp + t*Vp;
+                                        int ix = targets[b*T + t];
+                                        losses[b*T + t] = -logf(probs_bt[ix]);
+                                    }
+                                }
+
+                            }
+
+
+                            void crossenropy_softmax_backward(float* dlogits, float* dlosses, float* probs, int* targets,
+                                                                int B, int T, int V, int Vp){
+                                                                    for (int b=0; b<B; b++){
+                                                                        for (int t=0; t<T; t++){
+                                                                            float* dlogits_bt = dlogits + b*T*Vp + t*Vp;
+                                                                            float* probs_bt = probs + b*T*Vp + t*Vp;
+                                                                            float dloss = dlosses[b*T + t];
+                                                                            int ix = targets[b*T + t];
+
+                                                                            for (int i=0; i<V; i++){
+                                                                                float p = probs_bt[i];
+                                                                                float indicator = i ==ix ? 1.0f : 0.0f;
+                                                                                dlogits_bt[i] += (p - indicator) * dloss;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
 
