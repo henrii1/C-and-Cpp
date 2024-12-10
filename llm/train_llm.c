@@ -505,3 +505,194 @@ void crossentropy_forward(float* losses, float* probs, int* targets,
                                                                     }
                                                                 }
 
+
+                /* GPT-2 Model Definition*/
+
+typedef struct {
+    int max_seq_len;  // max sequence length e.g 1024
+    int vocab_size;  
+    int padded_vocab_size;  //nice number e.g %128==0
+    int num_layers;
+    int num_heads;    //num attention heads  e.g 12
+    int channels;  //dmodel e.g 768
+} GPT2Config;
+
+#define NUM_PARAMETER_TENSORS 16
+
+typedef struct {
+    float* wte; // (V, C)
+    float* wpe; // (maxT, C)
+    float* ln1w; // (L, C) linear shape
+    float* ln1b; // (L, C)
+    float* qkvw; // (L, 3*C, C)
+    float* qkvb; // (L, 3*C)
+    float* attprojw; // (L, C, C)
+    float* attprojb; // (L, C)
+    float* ln2w;  // (L, C)
+    float* ln2b;  // (L, C)
+    float* fcw;   // (L, 4*C, C) raise size 4x
+    float* fcb;   //  (L, 4*C)
+    float* fcprojw; // (L, C, 4*C)
+    float* fcprojb; // (L, C)
+    float* lnfw;   // (C)
+    float* lnfb;   // (C)
+} ParameterTensors;
+
+
+void fill_in_parameter_sizes(size_t* param_sizes, GPT2Config config){
+    size_t Vp = config.padded_vocab_size;
+    size_t C = config.channels;
+    size_t maxT = config.max_seq_len;
+    size_t L = config.num_layers;
+
+    //param sizes array
+    param_sizes[0] = Vp*C; //wte
+    param_sizes[1] = maxT*C; //wpe
+    param_sizes[2] = L*C;    //ln1w
+    param_sizes[3] = L*C;    //ln1b
+    param_sizes[4] = L* (3*C) *C; //qkvw
+    param_sizes[5] = L * (3*C); //qkvb
+    param_sizes[6] = L * C * C; //attnprojw
+    param_sizes[7] = L * C;  //attnprojb
+    param_sizes[8] = L * C;  //ln2w
+    param_sizes[9] = L * C;  //ln2b
+    param_sizes[10] = L * (4 * C) * C;  //fcw
+    param_sizes[11] = L * (4 * C);  //fcb
+    param_sizes[12] = L * C * (4 * C); //fcprojw
+    param_sizes[13] = L * C;  //fcprojb
+    param_sizes[14] = C;    //lnfw
+    param_sizes[15] = C;    //lnfb
+
+}
+
+//allocate memories and point tensors
+float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes) {
+    size_t num_parameters = 0;
+    for (size_t i=0; i<NUM_PARAMETER_TENSORS; i++){
+        num_parameters += param_sizes[i];
+    }
+    //malloc all params at once
+    float* params_memory = (float*)mallocCheck(num_parameters * sizeof(float));
+
+    // assign all the tensors
+    float** ptrs[] = {
+        &params->wte, &params->wpe, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
+        &params->attprojw, &params->attprojb, &params->ln2w, &params->ln2b, &params->fcw, &params->fcb,
+        &params->fcprojw, &params->fcprojb, &params->lnfw, &params->lnfb
+    };  //& for linking original param and not a copy
+    float* params_memory_iterator = params_memory;
+    for (size_t i=0; i<NUM_PARAMETER_TENSORS; i++){
+        *(ptrs[i]) = params_memory_iterator;   //assign the references to actual storage
+        params_memory_iterator += param_sizes[i];  //to ensure that each points to a different, adequate memory chunk
+    }
+    return params_memory;   // will be same as ptrs[0]
+}
+
+
+#define NUM_ACTIVATION_TENSORS 23
+typedef struct {
+    float* encoded; // (B, T, C)
+    float* ln1; // (L, B, T, C)
+    float* ln1_mean; // (L, B, T)
+    float* ln1_rstd; // (L, B, T)
+    float* qkv; // (L, B, T, 3*C)
+    float* atty; // (L, B, T, C)
+    float* preatt; // (L, B, NH, T, T)
+    float* att; // (L, B, NH, T, T)
+    float* attproj; // (L, B, T, C)
+    float* residual2; // (L, B, T, C)
+    float* ln2; // (L, B, T, C)
+    float* ln2_mean; // (L, B, T)
+    float* ln2_rstd; // (L, B, T)
+    float* fch; // (L, B, T, 4*C)
+    float* fch_gelu; // (L, B, T, 4*C)
+    float* fcproj; // (L, B, T, C)
+    float* residual3; // (L, B, T, C)
+    float* lnf; // (B, T, C)
+    float* lnf_mean; // (B, T)
+    float* lnf_rstd; // (B, T)
+    float* logits; // (B, T, V)
+    float* probs; // (B, T, V)
+    float* losses; // (B, T)
+} ActivationTensors;
+
+void fill_in_activation_sizes(size_t* act_sizes, GPT2Config config, int B, int T) {
+    size_t C = config.channels;
+    size_t NH = config.num_heads;
+    size_t L = config.num_layers;
+    size_t Vp = config.padded_vocab_size;
+    act_sizes[0] = B * T * C; // encoded
+    act_sizes[1] = L * B * T * C; // ln1
+    act_sizes[2] = L * B * T; // ln1_mean
+    act_sizes[3] = L * B * T; // ln1_rstd
+    act_sizes[4] = L * B * T * 3 * C; // qkv
+    act_sizes[5] = L * B * T * C; // atty
+    act_sizes[6] = L * B * NH * T * T; // preatt
+    act_sizes[7] = L * B * NH * T * T; // att
+    act_sizes[8] = L * B * T * C; // attproj
+    act_sizes[9] = L * B * T * C; // residual2
+    act_sizes[10] = L * B * T * C; // ln2
+    act_sizes[11] = L * B * T; // ln2_mean
+    act_sizes[12] = L * B * T; // ln2_rstd
+    act_sizes[13] = L * B * T * 4 * C; // fch
+    act_sizes[14] = L * B * T * 4 * C; // fch_gelu
+    act_sizes[15] = L * B * T * C; // fcproj
+    act_sizes[16] = L * B * T * C; // residual3
+    act_sizes[17] = B * T * C; // lnf
+    act_sizes[18] = B * T; // lnf_mean
+    act_sizes[19] = B * T; // lnf_rstd
+    act_sizes[20] = B * T * Vp; // logits
+    act_sizes[21] = B * T * Vp; // probs
+    act_sizes[22] = B * T; // losses
+}
+
+float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) {
+    size_t num_activations = 0;
+    for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+        num_activations += act_sizes[i];
+    }
+    float* acts_memory = (float*)mallocCheck(num_activations * sizeof(float));
+    float** ptrs[] = {
+        &acts->encoded, &acts->ln1, &acts->ln1_mean, &acts->ln1_rstd, &acts->qkv, &acts->atty,
+        &acts->preatt, &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean,
+        &acts->ln2_rstd, &acts->fch, &acts->fch_gelu, &acts->fcproj, &acts->residual3, &acts->lnf,
+        &acts->lnf_mean, &acts->lnf_rstd, &acts->logits, &acts->probs, &acts->losses
+    };
+    float* acts_memory_iterator = acts_memory;
+    for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+        *(ptrs[i]) = acts_memory_iterator;
+        acts_memory_iterator += act_sizes[i];
+    }
+    return acts_memory;
+}
+
+typedef struct {
+    GPT2Config config;
+    //weights (params) of the model and their sizes
+    ParameterTensors params;
+    size_t param_sizes[NUM_PARAMETER_TENSORS];
+    float* params_memory;
+    size_t num_parameters;
+    //gradients of the weights
+    ParameterTensors grads;
+    float* grads_memory;
+    //buffer for the AdamW optimizer
+    float* m_memory;
+    float* v_memory;
+    //activations of model
+    ActivationTensors acts;
+    size_t act_sizes[NUM_ACTIVATION_TENSORS];
+    float* acts_memory;
+    size_t num_activations;
+    // gradients of the activations
+    ActivationTensors grads_acts;
+    float* grads_acts_memory;
+    // other run state configuration
+    int batch_size;
+    int seq_len;
+    int* inputs;
+    int* targets;
+    float mean_loss;
+} GPT2;
+
+//find out how these gpt2 config pointers would be related with those defined within structs and functions.
