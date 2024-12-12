@@ -695,4 +695,65 @@ typedef struct {
     float mean_loss;
 } GPT2;
 
-//find out how these gpt2 config pointers would be related with those defined within structs and functions.
+
+void gpt2_build_from_checkpoint(GPT2* model, const char* checkpoint_path){
+    // read in model from a checkpoint file
+    FILE* model_file = fopenCheck(checkpoint_path, "rb");
+    int model_header[256];
+    freadCheck(model_header, sizeof(int), 256, model_file);
+    if (model_header[0] != 20240326){printf("Bad magic model file \n"); exit(1);}
+    if (model_header[1] != 3){
+        printf("Bad version in model file\n");
+        printf("---> HINT: try to re-run python train file"); exit(1);
+    }
+    //model struct is a class the stores the model. with pointers to memory used and static variables
+
+    //read hyperparemeters
+    size_t maxT, V, Vp, L, NH, C;  //size_t to prevent int overflow
+    model->config.max_seq_len = maxT = model_header[2]; //all others are empty, only model_header has a valu
+    model->config.vocab_size = V = model_header[3];
+    model->config.num_layers = L = model_header[4];
+    model->config.num_heads = NH = model_header[5];
+    model->config.channels = C = model_header[6];
+    model->config.padded_vocab_size = Vp = model_header[7];
+    printf("[GPT-2]\n");
+    printf("max_seq_len: %zu\n", maxT);      // zu for size_t
+    printf("vocab_size: %zu\n", V);
+    printf("padded_vocab_size: %zu\n", Vp);
+    printf("num_layers: %zu\n", L);
+    printf("num_heads: %zu\n", NH);
+    printf("channels: %zu\n", C);
+
+    //allocate space for all params and read them in
+    fill_in_parameter_sizes(model->param_sizes, model->config);
+
+    //count the number of params
+    size_t num_parameters = 0;
+    for (size_t i=0; i<NUM_PARAMETER_TENSORS; i++){
+        num_parameters = model->param_sizes[i];
+    }
+    printf("num_parameters: %zu\n", num_parameters);
+    model->num_parameters = num_parameters;
+
+    //read in all the parameters from the file
+    model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes);
+    freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
+    fcloseCheck(model_file);
+
+    //other inits
+    model->acts_memory = NULL;
+    model-> grads_memory = NULL;
+    model-> m_memory = NULL;
+    model->v_memory = NULL;
+    model->grads_acts_memory = NULL;
+    model->inputs = NULL;
+    model->targets = NULL;
+    model->batch_size = 0;
+    model-> seq_len = 0;
+    model->mean_loss = -1.0f;
+}
+
+void gpt2_forward(GPT2* model, int* inputs, int* targets, size_t B, size_t T){
+      
+}
+
