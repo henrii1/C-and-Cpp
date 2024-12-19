@@ -1028,3 +1028,150 @@ void gpt2_free(GPT2* model){
     free(model->inputs);
     free(model->targets);
 }
+
+
+
+// this part should only run on the train.c file
+
+#ifndef TESTING      //if testing is not defined within this file
+
+unsigned int random_u32(uint64_t* state){  //random number generator, input is a state, output is a random number
+    // xorshift rng: https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
+
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+
+    return (*state * 0x2545F4914F6CDD1Dull) >> 32; 
+
+}
+
+float random_f32(uint64_t* state){  // random float btwn 0 and 1
+    return (random_u32(state) >> 8) / 16777216.0f;
+    }
+
+int sample_mult(float* probabilities, int n, float coin){
+    //sampling from a multinomial
+    //coin is a random number between 0 and 1
+    float cdf = 0.0f;
+    for (int i=0; i<n; i++){
+        cdf += probabilities[i];
+        if (coin < cdf){
+            return i;
+        }
+    }
+    return n-1;
+}
+
+
+//main training loop
+
+int main(){
+
+    //initialize model
+    GPT2 model;
+    gpt2_build_from_checkpoint(&model, "gpt2_117M_model.bin");  //bin file should be generated first from train.py
+
+    //build the DataLoader from token files
+    const char* tiny_stories_train = "dev/data/tinystories/TinyStories_train.bin";
+    const char* tiny_stories_val = "dev/data/tinystories/TinyStories_val.bin";
+    const char* tiny_shakespeare_train = "dev/data/tinyshakespeare/tiny_shakespeare_train.bin";
+    const char* tiny_shakespeare_val = "dev/data/tinyshakespeare/tiny_shakespeare_val.bin";
+    const char* train_tokens = access(tiny_shakespeare_train, F_OK) != -1 ? tiny_shakespeare_train : tiny_stories_train;
+    const char* val_tokens = access(tiny_shakespeare_val, F_OK) != -1 ? tiny_shakespeare_val : tiny_stories_val;
+    int B = 4;
+    int T = 64;
+    DataLoader train_loader, val_loader;
+    dataloader_init(&train_loader, train_tokens, B, T, 0, 1, 1);
+    dataloader_init(&val_loader, val_tokens, B, T, 0, 1, 0);
+    printf("train dataset num_batches: %zu\n", train_loader.num_tokens / (B*T));
+    printf("val dataset num_batches: %zu\n", val_loader.num_tokens / (B*T));
+    int val_num_batches = 5;
+
+    //build the Tokenizer
+    Tokenizer tokenizer;
+    tokenizer_init(&tokenizer, "gpt2_tokenizer.bin");
+
+    //some memory fot generating samples from the model
+    uint64_t rng_state = 1337;
+    int* gen_tokens = (int*)mallocCheck(B*T*sizeof(int));
+    const int genT = 64; // length of generated samples
+
+    //train
+    struct timespec start, end;
+    for (int step=0; step<=40; step++){
+
+        //estimate val loss once in a while
+        if (step % 10 == 0){
+            float val_loss = 0.0f;
+            dataloader_reset(&val_loader);
+            for (int i=0; i<val_num_batches; i++){
+                dataloader_next_batch(&val_loader);
+                gpt2_forward(&model, val_loader.inputs, val_loader.targets, B, T);
+                val_loss += model.mean_loss;
+            }
+            val_loss /= val_num_batches;
+            printf("val loss %f\n", val_loss);
+        }
+
+        //once in a while do inference
+        if (step > 0 && step % 20 ==0){
+            //fill gent_tokens with GPT2_EOT, which kicks off generation
+            for(int i=0; i<B*T; i++){ gen_tokens[i] = tokenizer.eot_token; }
+
+            //generate
+            for (int i=1; t<genT; t++){
+                gpt2_forward(&model, gen_tokens, NULL, B, T);
+                
+                //take only 0 position batch
+                float* probs = model.acts.probs + (t-1)*model.config.padded_vocab_size;
+                float coin = random_f32(&rng_state);
+
+                int next_token = sample_mult(probs, model.config.vocab_size, coin);
+                gen_tokens[t] = next_token;
+
+                //print using the tokenizer
+                if (tokenizer.init_ok){
+                    const char* token_str = tokenizer.decode(&tokenizer, new_token);
+                    safe_printf(token_str);
+                } else {
+                    //print the token id
+                    safe_printf("%d ", next_token);
+                }
+                fflush(stdout);
+            }
+            printf("\n------\n");
+        }
+        //do training
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        dataloader_next_batch(&train_loader);
+        gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
+        gpt2_zero_grad(&model);
+        gpt2_backward(&model);
+        gpt2_update(&model, 0.00004f, 0.9f, 0.999f, 1e-8f, 0.0f, step+1);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        double time_elapsed_s = (end.tv_sec - start.tv_sec) + 1e-9 * (end.tv_nsec - start.tv_nsec);
+        printf("step %d, loss %f, time elapsed %f\n", step, model.mean_loss, time_elapsed_s);
+    }
+
+    //free memory
+    dataloader_free(&train_loader);
+    dataloader_free(&val_loader);
+    tokenizer_free(&tokenizer);
+    gpt2_free(&model);
+    free(gen_tokens);
+    return 0;
+
+
+
+
+
+}
+
+
+
+
+
+
+
+#endif

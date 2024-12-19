@@ -17,7 +17,52 @@ Implements:
 #include "rand.h"
 
 //windows specific
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#include <tchar.h>
+#include <strsafe.h>
+#include <vector>
+#include <string>
+
+typedef struct {
+    size_t gl_pathc;    /* Count of total paths so far. */
+    char **gl_pathv;    /* List of paths matching pattern. */
+    size_t gl_offs;     /* Slots to reserve in gl_pathv. */
+} glob_t;
+
+int glob(const char *pattern, int flags, int (*errfunc)(const char *epath, int eerrno), glob_t *pglob) {
+    WIN32_FIND_DATAA findFileData;
+    HANDLE hFind = FindFirstFileA(pattern, &findFileData);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return 1; // No files found
+    } 
+
+    std::vector<std::string> files;
+    do {
+        if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            files.push_back(findFileData.cFileName);
+        }
+    } while (FindNextFileA(hFind, &findFileData) != 0);
+
+    FindClose(hFind);
+
+    pglob->gl_pathc = files.size();
+    pglob->gl_pathv = (char **)malloc(files.size() * sizeof(char *));
+    for (size_t i = 0; i < files.size(); ++i) {
+        pglob->gl_pathv[i] = _strdup(files[i].c_str());
+    }
+
+    return 0;
+}
+
+void globfree(glob_t *pglob) {
+    for (size_t i = 0; i < pglob->gl_pathc; ++i) {
+        free(pglob->gl_pathv[i]);
+    }
+    free(pglob->gl_pathv);
+}
+#else
 #include <glob.h>
 #endif
 
@@ -25,7 +70,7 @@ Implements:
 
 #define HEADER_SIZE 256
 
-typdef struct {
+typedef struct {
     int process_rank;
     int num_processes;
     //batch and token info
